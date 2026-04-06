@@ -1,0 +1,181 @@
+rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: users
+// Document ID: {userId}
+// Fields:
+//   - id: string (required)
+//   - name: string (required)
+//   - email: string (required, email format)
+//   - department: string (required)
+//   - role: string (required)
+//
+// Collection: connectors
+// Document ID: {connectorId}
+// Fields:
+//   - id: string (required)
+//   - name: string (required)
+//   - type: string (required, enum: identity, data)
+//   - status: string (required, enum: active, inactive, error)
+//   - lastSync: string (required, date-time)
+//   - description: string (optional)
+//
+// Collection: reviews
+// Document ID: {reviewId}
+// Fields:
+//   - id: string (required)
+//   - userId: string (required)
+//   - userName: string (required)
+//   - userEmail: string (required, email format)
+//   - connectorId: string (required)
+//   - connectorName: string (required)
+//   - resource: string (required)
+//   - permission: string (required)
+//   - status: string (required, enum: pending, approved, flagged, revoked)
+//   - aiRecommendation: string (optional)
+//   - aiConfidence: number (optional)
+//   - lastReviewedAt: string (optional, date-time)
+//
+// Collection: logs
+// Document ID: {logId}
+// Fields:
+//   - id: string (required)
+//   - timestamp: string (required, date-time)
+//   - action: string (required)
+//   - user: string (required)
+//   - details: string (required)
+//   - severity: string (required, enum: info, warning, critical)
+//
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        ((request.auth.token.email == "hen228@lehigh.edu" && request.auth.token.email_verified == true) ||
+         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'));
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidEmail(email) {
+      return email is string &&
+        email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string &&
+        dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return hasRequiredFields(['id', 'name', 'email', 'department', 'role']) &&
+             hasOnlyAllowedFields(['id', 'name', 'email', 'department', 'role']) &&
+             data.id is string && data.id.size() > 0 && data.id.size() < 128 &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 128 &&
+             data.email is string && isValidEmail(data.email) &&
+             data.department is string && data.department.size() > 0 && data.department.size() < 128 &&
+             data.role is string && data.role.size() > 0 && data.role.size() < 64;
+    }
+
+    function isValidConnector(data) {
+      return hasRequiredFields(['id', 'name', 'type', 'status', 'lastSync']) &&
+             hasOnlyAllowedFields(['id', 'name', 'type', 'status', 'lastSync', 'description']) &&
+             data.id is string && data.id.size() > 0 &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 128 &&
+             data.type in ['identity', 'data'] &&
+             data.status in ['active', 'inactive', 'error'] &&
+             isValidDateString(data.lastSync) &&
+             (!('description' in data) || (data.description is string && data.description.size() < 500));
+    }
+
+    function isValidReview(data) {
+      return hasRequiredFields(['id', 'userId', 'userName', 'userEmail', 'connectorId', 'connectorName', 'resource', 'permission', 'status']) &&
+             hasOnlyAllowedFields(['id', 'userId', 'userName', 'userEmail', 'connectorId', 'connectorName', 'resource', 'permission', 'status', 'aiRecommendation', 'aiConfidence', 'lastReviewedAt']) &&
+             data.id is string && data.id.size() > 0 &&
+             data.userId is string && data.userId.size() > 0 &&
+             data.userName is string && data.userName.size() > 0 &&
+             data.userEmail is string && isValidEmail(data.userEmail) &&
+             data.connectorId is string && data.connectorId.size() > 0 &&
+             data.connectorName is string && data.connectorName.size() > 0 &&
+             data.resource is string && data.resource.size() > 0 &&
+             data.permission is string && data.permission.size() > 0 &&
+             data.status in ['pending', 'approved', 'flagged', 'revoked'] &&
+             (!('aiRecommendation' in data) || (data.aiRecommendation is string && data.aiRecommendation.size() < 1000)) &&
+             (!('aiConfidence' in data) || (data.aiConfidence is number && data.aiConfidence >= 0 && data.aiConfidence <= 1)) &&
+             (!('lastReviewedAt' in data) || isValidDateString(data.lastReviewedAt));
+    }
+
+    function isValidLog(data) {
+      return hasRequiredFields(['id', 'timestamp', 'action', 'user', 'details', 'severity']) &&
+             hasOnlyAllowedFields(['id', 'timestamp', 'action', 'user', 'details', 'severity']) &&
+             data.id is string && data.id.size() > 0 &&
+             isValidDateString(data.timestamp) &&
+             data.action is string && data.action.size() > 0 &&
+             data.user is string && data.user.size() > 0 &&
+             data.details is string && data.details.size() > 0 &&
+             data.severity in ['info', 'warning', 'critical'];
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidUser(request.resource.data) && (isOwner(userId) || isAdmin());
+      allow update: if isAuthenticated() && isValidUser(request.resource.data) && (isOwner(userId) || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    match /connectors/{connectorId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin() && isValidConnector(request.resource.data);
+    }
+
+    match /reviews/{reviewId} {
+      allow read: if isAuthenticated();
+      allow create: if isAdmin() && isValidReview(request.resource.data);
+      allow update: if isAuthenticated() && isValidReview(request.resource.data) && (isAdmin() || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'lastReviewedAt']) && resource.data.userId == request.auth.uid));
+      allow delete: if isAdmin();
+    }
+
+    match /logs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isAuthenticated() && isValidLog(request.resource.data);
+      allow update, delete: if isAdmin();
+    }
+
+    // Default deny
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}
